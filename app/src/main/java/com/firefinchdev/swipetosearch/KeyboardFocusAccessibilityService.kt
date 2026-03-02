@@ -4,9 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -18,95 +18,96 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
         private const val TAG = "KeyboardFocusService"
         private const val TARGET_ID_NAME = "search_src_text"
         private const val FOCUS_COOLDOWN_MS = 500L
+        private const val DEBOUNCE_DELAY_MS = 10L
+        const val PREF_NAME = "app_prefs"
+        const val KEY_SERVICE_ENABLED = "service_enabled"
     }
+
     private var currentLauncherPackage: String? = null
-
+    private var cachedFullViewId: String? = null
     private var lastFocusAttemptTime = 0L
-
-    // STATE TRACKING:
     private var isDrawerSessionActive = false
+    private var isServiceEnabledInApp = true
 
-    private val stabilityHandler = Handler(Looper.getMainLooper())
+    private lateinit var stabilityHandler: Handler
     private val stabilityRunnable = Runnable { onUiStabilized() }
 
-    override fun onServiceConnected() {
-        Log.d(TAG, "Accessibility service connected")
-        val info = serviceInfo
-        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-        info.flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-        serviceInfo = info
-
-        identifyDefaultLauncher()
+    private val preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
+        if (key == KEY_SERVICE_ENABLED) {
+            isServiceEnabledInApp = sharedPreferences.getBoolean(KEY_SERVICE_ENABLED, true)
+        }
     }
 
-    /**
-     * CHANGED: Uses resolveActivity to find the SINGLE active default home app.
-     */
+    override fun onServiceConnected() {
+        stabilityHandler = Handler(mainLooper)
+
+        val prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE)
+        isServiceEnabledInApp = prefs.getBoolean(KEY_SERVICE_ENABLED, true)
+        prefs.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
+
+        identifyDefaultLauncher()
+
+        // Configure service info dynamically to filter only launcher events
+        serviceInfo = serviceInfo.apply {
+            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            // Filter events to only the launcher package — huge perf win
+            packageNames = currentLauncherPackage?.let { arrayOf(it) }
+        }
+    }
+
     private fun identifyDefaultLauncher() {
         val intent = Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_HOME)
         }
-
-        // resolveActivity returns the "best match" (the one the user selected as default)
         val resolveInfo = packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-
-        if (resolveInfo != null && resolveInfo.activityInfo != null) {
-            currentLauncherPackage = resolveInfo.activityInfo.packageName
-            Log.d(TAG, "Active Default Launcher found: $currentLauncherPackage")
+        val pkg = resolveInfo?.activityInfo?.packageName
+        if (pkg != null) {
+            currentLauncherPackage = pkg
+            cachedFullViewId = "$pkg:id/$TARGET_ID_NAME"
         } else {
             Log.w(TAG, "Could not identify a default launcher.")
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        val packageName = event.packageName?.toString() ?: return
+        // Package filtering is already done by the system via serviceInfo.packageNames,
+        // but guard against edge cases where launcher hasn't been identified.
+        if (currentLauncherPackage == null) return
 
-        // CHANGED: Compare against the single active launcher string
-        if (packageName == currentLauncherPackage) {
-            stabilityHandler.removeCallbacks(stabilityRunnable)
-            stabilityHandler.post(stabilityRunnable)
-        }
+        // Debounce: coalesce rapid-fire events into a single stabilized callback
+        stabilityHandler.removeCallbacks(stabilityRunnable)
+        stabilityHandler.postDelayed(stabilityRunnable, DEBOUNCE_DELAY_MS)
     }
 
     private fun onUiStabilized() {
+        if (!isServiceEnabledInApp) return
 
         val currentTime = System.currentTimeMillis()
         if (currentTime - lastFocusAttemptTime > FOCUS_COOLDOWN_MS) {
             attemptFocus(currentTime)
         }
-
-
     }
 
     private fun attemptFocus(currentTime: Long) {
         val rootNode = rootInActiveWindow ?: return
+        val viewId = cachedFullViewId ?: return
 
         try {
-            val packageName = rootNode.packageName?.toString()
-            if (packageName == currentLauncherPackage) {
-                val fullViewId = "$packageName:id/$TARGET_ID_NAME"
-                Log.d(TAG, "searching")
-                val foundNodes = rootNode.findAccessibilityNodeInfosByViewId(fullViewId)
-                if (!foundNodes.isNullOrEmpty()) {
-                    if (!isDrawerSessionActive) {
-                        // CASE 1: First time detection
-                        val targetNode = foundNodes[0]
-                        Log.d(TAG, "Drawer opened: Clicking search bar")
-                        targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        lastFocusAttemptTime = currentTime
-                        isDrawerSessionActive = true
-                    }
-                    // CASE 2: Already active, do nothing
-                } else {
-                    Log.d(TAG, "not found")
-                    // CASE 3: Not found (likely closed drawer or moved away)
-                    if (isDrawerSessionActive) {
-                        Log.d(TAG, "Search bar lost: Resetting session")
-                        isDrawerSessionActive = false
-                    }
+            val foundNodes = rootNode.findAccessibilityNodeInfosByViewId(viewId)
+            if (!foundNodes.isNullOrEmpty()) {
+                if (!isDrawerSessionActive) {
+                    val targetNode = foundNodes[0]
+                    targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    lastFocusAttemptTime = currentTime
+                    isDrawerSessionActive = true
+                }
+            } else {
+                if (isDrawerSessionActive) {
+                    isDrawerSessionActive = false
                 }
             }
         } catch (e: Exception) {
@@ -121,5 +122,7 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         stabilityHandler.removeCallbacks(stabilityRunnable)
+        getSharedPreferences(PREF_NAME, MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
     }
 }

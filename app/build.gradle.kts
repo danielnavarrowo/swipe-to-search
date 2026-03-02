@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "com.firefinchdev.swipetosearch"
-        minSdk = 30
+        minSdk = 32
         targetSdk = 36
         versionCode = 2
         versionName = "1.0.0"
@@ -42,7 +42,6 @@ android {
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt")
             )
-            // Solo usa signingConfig release si el keystore existe
             val keystoreFile = rootProject.file("app/keystore.jks")
             signingConfig = if (keystoreFile.exists()) {
                 signingConfigs.getByName("release")
