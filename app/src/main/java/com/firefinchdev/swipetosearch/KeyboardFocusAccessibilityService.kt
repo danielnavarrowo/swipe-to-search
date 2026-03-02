@@ -17,8 +17,8 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "KeyboardFocusService"
         private const val TARGET_ID_NAME = "search_src_text"
-        private const val FOCUS_COOLDOWN_MS = 500L
-        private const val DEBOUNCE_DELAY_MS = 10L
+        private const val FOCUS_COOLDOWN_MS = 400L
+        private const val CONTENT_CHANGED_DEBOUNCE_MS = 50L
         const val PREF_NAME = "app_prefs"
         const val KEY_SERVICE_ENABLED = "service_enabled"
     }
@@ -30,13 +30,14 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
     private var isServiceEnabledInApp = true
 
     private lateinit var stabilityHandler: Handler
-    private val stabilityRunnable = Runnable { onUiStabilized() }
+    private val contentChangedRunnable = Runnable { processFocusAttempt() }
 
-    private val preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
-        if (key == KEY_SERVICE_ENABLED) {
-            isServiceEnabledInApp = sharedPreferences.getBoolean(KEY_SERVICE_ENABLED, true)
+    private val preferenceChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
+            if (key == KEY_SERVICE_ENABLED) {
+                isServiceEnabledInApp = sharedPreferences.getBoolean(KEY_SERVICE_ENABLED, true)
+            }
         }
-    }
 
     override fun onServiceConnected() {
         stabilityHandler = Handler(mainLooper)
@@ -74,16 +75,21 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        // Package filtering is already done by the system via serviceInfo.packageNames,
-        // but guard against edge cases where launcher hasn't been identified.
         if (currentLauncherPackage == null) return
 
-        // Debounce: coalesce rapid-fire events into a single stabilized callback
-        stabilityHandler.removeCallbacks(stabilityRunnable)
-        stabilityHandler.postDelayed(stabilityRunnable, DEBOUNCE_DELAY_MS)
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                stabilityHandler.removeCallbacks(contentChangedRunnable)
+                processFocusAttempt()
+            }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                stabilityHandler.removeCallbacks(contentChangedRunnable)
+                stabilityHandler.postDelayed(contentChangedRunnable, CONTENT_CHANGED_DEBOUNCE_MS)
+            }
+        }
     }
 
-    private fun onUiStabilized() {
+    private fun processFocusAttempt() {
         if (!isServiceEnabledInApp) return
 
         val currentTime = System.currentTimeMillis()
@@ -101,10 +107,13 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
             if (!foundNodes.isNullOrEmpty()) {
                 if (!isDrawerSessionActive) {
                     val targetNode = foundNodes[0]
-                    targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    lastFocusAttemptTime = currentTime
-                    isDrawerSessionActive = true
+                    val result = targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (result) {
+                        lastFocusAttemptTime = currentTime
+                        isDrawerSessionActive = true
+                    }
                 }
+                for (node in foundNodes) node.recycle()
             } else {
                 if (isDrawerSessionActive) {
                     isDrawerSessionActive = false
@@ -112,16 +121,18 @@ class KeyboardFocusAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error finding search bar", e)
+        } finally {
+            rootNode.recycle()
         }
     }
 
     override fun onInterrupt() {
-        stabilityHandler.removeCallbacks(stabilityRunnable)
+        stabilityHandler.removeCallbacks(contentChangedRunnable)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stabilityHandler.removeCallbacks(stabilityRunnable)
+        stabilityHandler.removeCallbacks(contentChangedRunnable)
         getSharedPreferences(PREF_NAME, MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
     }
