@@ -1,10 +1,10 @@
 package com.firefinchdev.swipetosearch
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
-import android.content.ComponentName
-import android.content.Context
 import android.text.TextUtils
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,19 +19,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.core.content.edit
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.firefinchdev.swipetosearch.ui.theme.theme.MyApplicationTheme
 
 fun isAccessibilityServiceEnabled(context: Context): Boolean {
@@ -135,7 +139,12 @@ fun MainScreen(modifier: Modifier = Modifier) {
                         checked = isServiceActive,
                         onCheckedChange = {
                             isServiceActive = it
-                            prefs.edit().putBoolean(KeyboardFocusAccessibilityService.KEY_SERVICE_ENABLED, it).apply()
+                            prefs.edit {
+                                putBoolean(
+                                    KeyboardFocusAccessibilityService.KEY_SERVICE_ENABLED,
+                                    it
+                                )
+                            }
                         },
                     )
                 },

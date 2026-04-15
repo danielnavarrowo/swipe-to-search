@@ -11,12 +11,12 @@ kotlin {
 
 android {
     namespace = "com.firefinchdev.swipetosearch"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.firefinchdev.swipetosearch"
         minSdk = 32
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 2
         versionName = "1.0.0"
 
